@@ -712,7 +712,6 @@ gs_watch_handle gs_watch_open(gs_watch_bytes dir) {
     w->fd = -1;
     w->extra = -1;
     w->dir = path;
-    w->base = plen + 1;
 
     const watch_backend *be = watch_backend_get();
     if (!be->init(w, path) || !watch_snapshot(w)) {

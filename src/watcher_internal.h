@@ -103,10 +103,8 @@ struct watch_state {
     uint8_t *packet;   /* The read's destination, WATCH_PACKET bytes. */
     bool pending_read; /* A read is outstanding. */
 #endif
-    /* The directory, NUL-terminated, for existence checks (`dir/`, names
-       appended at base). */
+    /* The directory, NUL-terminated, without trailing slash. */
     char *dir;
-    size_t base;
     /* The snapshot: NUL-joined names at open and after each burst. */
     char *snapshot;
     size_t snapshot_len;
