@@ -12,7 +12,7 @@
    passes the way the C compilers do (scalars and small all-integer
    structs).
 
-   Handles are slot ids with a generation, stored as an i64: 0 is none,
+   Watchers are slot ids with a generation, stored as an i64: 0 is none,
    and a closed or never-opened id is an error to use, not a crash. Every
    call checks its handle first. All blocking and all fd/handle lifetime
    stays in C; the Goose side owns only the callback loop plus a fixed
@@ -39,7 +39,7 @@ extern "C" {
 
 typedef struct { uint8_t *data; int64_t len; } gs_watch_bytes;   /* u8[:], the generated sl_u8 */
 
-typedef struct { int64_t id; } gs_watch_handle;                  /* Watch: slot id, 0 = none */
+typedef struct { int64_t id; } gs_watch_watcher;                  /* Watch: slot id, 0 = none */
 
 #pragma pack(pop)
 
@@ -47,9 +47,9 @@ typedef struct { int64_t id; } gs_watch_handle;                  /* Watch: slot 
 
 #define GS_WATCH_API(X) \
     X(uint8_t, gs_watch_available, (void)) \
-    X(gs_watch_handle, gs_watch_open, (gs_watch_bytes dir)) \
-    X(int64_t, gs_watch_next, (gs_watch_handle h, gs_watch_bytes out, int64_t timeout_ms)) \
-    X(void, gs_watch_close, (gs_watch_handle h)) \
+    X(gs_watch_watcher, gs_watch_open, (gs_watch_bytes dir)) \
+    X(int64_t, gs_watch_next, (gs_watch_watcher h, gs_watch_bytes out, int64_t timeout_ms)) \
+    X(void, gs_watch_close, (gs_watch_watcher h)) \
     X(int64_t, gs_watch_error, (gs_watch_bytes out))
 
 #define GS_WATCH_PROTO(ret, name, params) ret name params;
@@ -57,7 +57,7 @@ GS_WATCH_API(GS_WATCH_PROTO)
 #undef GS_WATCH_PROTO
 
 /* The constants watcher.goose declares, with their Goose types; here
-   they are GS_WATCH_<name>. The verbs are what gs_watch_next frames
+   they are GS_WATCH_<name>. The kinds are what gs_watch_next frames
    beside each name. */
 #define GS_WATCH_CONSTANTS(X) \
     /* Verbs. */ \

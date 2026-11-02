@@ -8,12 +8,12 @@ import os;
 import std;
 
 struct FW {
-    name: u8[..255],
-    verb: u8[..16],
+    path: u8[..255],
+    kind: watcher::Kind,
 }
 
 fn format(out: u8[>..]&, v: FW) {
-    format(out, v.name, ": ", v.verb);
+    format(out, v.path, ": ", watcher::kind_name(v.kind));
 }
 
 thread_fn handle_callback() {
@@ -34,8 +34,8 @@ fn main() {
         exit(1);
     }
     print("watching '", dir, "', Ctrl-C to stop");
-    w.each_change() { name, verb =>
-        qput(FW { name: name, verb: verb });
+    w.each_event() { ev =>
+        qput(FW { path: ev.path, kind: ev.kind });
         true
     };
     w.close();

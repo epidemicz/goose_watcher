@@ -1,20 +1,27 @@
-// Watches one directory and reports each change as (name, verb), where
-// the verb is "created", "modified", or "deleted" and describes the net
-// change. An atomic save (write temp, rename over) reports `modified`
-// on the real file; short-lived temp files report nothing.
+// Watches one directory and reports each change as an Event, where
+// kind is Created, Modified, or Deleted and describes the net change.
+// An atomic save (write temp, rename over) reports Modified on the real
+// file; short-lived temp files report nothing.
 //
 //   import watcher from "./watcher";
 //   fn main() {
 //       var w, err = watcher::open(".");
 //       guard err.len == 0 else { print("watch: ", err); return; }
-//       w.each_change() { name, verb => print(name, " - ", verb); };
+//       w.each_event() { ev => print(ev.path, " - ", watcher::kind_name(ev.kind)); };
 //   }
 //
 // Changes surface after a short quiet window (100ms), so a burst of
 // writes still reports one change per file. A rename reads as its two
-// halves: the old name was deleted, the new one created. Reads and
+// halves: the old path Deleted, the new one Created. Reads and
 // metadata-only touches report nothing; subdirectories are not watched
 // recursively. The callback returning false stops the watch cleanly.
+//
+// Event.path is relative to the watched root: a bare name today, a
+// subpath ("sub/file") once recursion lands, so recursion will change
+// values, not this API. Event.path borrows the drain buffer for the
+// duration of the callback: use it inside the callback, or copy it if
+// it must outlive the callback (the threaded consumer example copies
+// it into a fixed array to cross a thread queue).
 //
 // The functions are C, the layer in src/ over the OS's own directory
 // notifications (inotify on Linux, kqueue on macOS,
@@ -29,28 +36,29 @@ namespace watcher;
 
 import binary;
 
-// --- constants: GS_WATCH_CONSTANTS in src/watcher_api.h -----------------------
+// --- kinds: the public event taxonomy ------------------------------------
+// Past tense, because an event is a net change after the quiet window,
+// not a raw OS write. A rename is Deleted + Created, not a separate
+// kind: the snapshot-diff layer cannot pair renames reliably yet.
 
-// What gs_watch_next frames beside each name: 1 created, 2 modified,
-// 3 deleted.
-let VERB_CREATED: i32 = 1;
-let VERB_MODIFIED: i32 = 2;
-let VERB_DELETED: i32 = 3;
+enum Kind { Created, Modified, Deleted }
 
-// --- structs: the packed C types in src/watcher_api.h --------------------------
+// --- structs: the types that cross to C, and the event -------------------
+// Watcher is the C layer's slot id, 0 = none. Single-use: open a new
+// one to restart. Event is Goose-side only: it never crosses to C.
 
-// A live watch: the C layer's slot id, 0 = none. Single-use: open a new
-// one to restart.
-struct Handle { id: i64 }
+struct Watcher { id: i64 }
+
+struct Event { path: u8[:], kind: Kind }
 
 // --- the library ---------------------------------------------------------------
 
 // Whether the watcher layer is linked in. A compiler without it refuses to
 // run a watcher program in-process, so this is true wherever it runs.
 extern fn available() -> bool = "gs_watch_available";
-extern fn open_handle(dir: const u8[:]) -> Handle = "gs_watch_open";
-extern fn next_into(h: Handle, out: u8[:], timeout_ms: i64) -> i64 = "gs_watch_next";
-extern fn close_handle(h: Handle) = "gs_watch_close";
+extern fn open_handle(dir: const u8[:]) -> Watcher = "gs_watch_open";
+extern fn next_into(h: Watcher, out: u8[:], timeout_ms: i64) -> i64 = "gs_watch_next";
+extern fn close_handle(h: Watcher) = "gs_watch_close";
 extern fn error_into(out: u8[:]) -> i64 = "gs_watch_error";
 
 // Why the last call that failed did, as text.
@@ -62,32 +70,45 @@ fn error() -> u8[>..] {
     return text;
 }
 
-// The verbs gs_watch_next frames, as text. C frames only 1/2/3; anything
-// else is a layer bug, reported as "".
-fn verb_of(verb: i32) -> const u8[:] {
-    if verb == VERB_CREATED { return "created"; }
-    if verb == VERB_MODIFIED { return "modified"; }
-    if verb == VERB_DELETED { return "deleted"; }
-    return "";
+// The kind gs_watch_next frames beside each path, as a Kind.
+// The C layer frames 1/2/3 (see GS_WATCH_VERB_* in src/watcher_api.h);
+// anything else is a layer bug, reported as false, and the event is
+// dropped by each_event rather than delivered with a made-up kind.
+fn kind_of(kind: i32) -> Kind, bool {
+    if kind == 1 { return Kind.Created, true; }
+    if kind == 2 { return Kind.Modified, true; }
+    if kind == 3 { return Kind.Deleted, true; }
+    return Kind.Created, false;
 }
 
-// Starts watching the directory: the Watch and "" on success, an empty
-// Watch and the reason on failure.
-fn open(dir: const u8[:]) -> Handle, u8[] {
+// Rendering only: "created", "modified", or "deleted". Compare kinds
+// with match or ==, not with this string.
+fn kind_name(kind: Kind) -> const u8[:] {
+    match kind {
+        Created => { return "created"; },
+        Modified => { return "modified"; },
+        Deleted => { return "deleted"; },
+    }
+}
+
+// Starts watching the directory: the Watcher and "" on success, an empty
+// Watcher and the reason on failure.
+fn open(dir: const u8[:]) -> Watcher, u8[] {
     let h = open_handle(dir);
     if h.id == 0 {
-        return Handle { id: 0 }, error();
+        return Watcher { id: 0 }, error();
     }
     return h, "";
 }
 
-// F(name, verb) for each change, until F returns false or the watch
-// fails. Blocks between bursts; Ctrl-C stops the program.
-fn each_change<F>(w: Handle&) {
+// F(ev) for each change, until F returns false or the watch fails.
+// Blocks between bursts; Ctrl-C stops the program.
+fn each_event<F>(w: Watcher&) {
     // One burst per gs_watch_next call: it blocks (-1: forever), gathers
-    // a full burst inside its quiet window, and frames u32 name_len LE,
-    // u32 verb LE, name bytes. A -2 grows the drain and retries; the
-    // burst waits in C.
+    // a full burst inside its quiet window, and frames u32 path_len LE,
+    // u32 kind LE, path bytes. A -2 (burst larger than the fixed drain)
+    // ends the watch, as in v1: the C layer spends the burst either way,
+    // so there is nothing to retry with.
     var buf: u8[65536];
     loop {
         let n = next_into(copy(w), buf[..], -1);
@@ -98,9 +119,10 @@ fn each_change<F>(w: Handle&) {
         var keep = true;
         while count < n {
             let len = binary::read_u32le(buf[..], off) as! i64;
-            let verb = binary::read_i32le(buf[..], off + 4);
-            let name = buf[off + 8..off + 8 + len];
-            if verb_of(verb).len > 0 && !F(name, verb_of(verb)) { keep = false; break; }
+            let framed = binary::read_i32le(buf[..], off + 4);
+            let path = buf[off + 8..off + 8 + len];
+            let kind, ok = kind_of(framed);
+            if ok && !F(Event { path: path, kind: kind }) { keep = false; break; }
             off = off + 8 + len;
             count = count + 1;
         }
@@ -109,7 +131,7 @@ fn each_change<F>(w: Handle&) {
 }
 
 // Releases the watch. Idempotent: closing a closed watch does nothing.
-fn close(w: Handle&) {
+fn close(w: Watcher&) {
     close_handle(copy(w));
     w.id = 0;
 }

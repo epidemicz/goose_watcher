@@ -65,7 +65,7 @@ int64_t gs_watch_error(gs_watch_bytes out) {
 }
 
 /* --- slots ------------------------------------------------------------------
-   Handles are slot ids with a generation: id = (generation << 32) | slot.
+   Watchers are slot ids with a generation: id = (generation << 32) | slot.
    Slot 0 never holds a watch, so id 0 is none. Closing a slot bumps its
    generation, so a closed id is an error to use, not a crash. The table is
    mutex-guarded; the states it points at belong to one thread each. */
@@ -80,8 +80,8 @@ static watch_slot *watch_slots;
 static size_t watch_slots_cap;
 static size_t watch_slots_len; /* one past the highest live slot */
 
-static gs_watch_handle watch_add(watch_state *state) {
-    gs_watch_handle none = { 0 };
+static gs_watch_watcher watch_add(watch_state *state) {
+    gs_watch_watcher none = { 0 };
     watch_mutex_lock(&watch_slots_mutex);
     size_t slot = 0;
     for (size_t i = 1; i < watch_slots_len; i++) {
@@ -110,13 +110,13 @@ static gs_watch_handle watch_add(watch_state *state) {
     watch_slots[slot].state = state;
     uint64_t id = ((uint64_t)watch_slots[slot].generation << 32) | (uint64_t)slot;
     watch_mutex_unlock(&watch_slots_mutex);
-    gs_watch_handle h = { (int64_t)id };
+    gs_watch_watcher h = { (int64_t)id };
     return h;
 }
 
 /* The state for a live id, or NULL (with watch_fail set) for a closed or
    never-opened one. The caller must not hold the mutex. */
-static watch_state *watch_lookup(gs_watch_handle h) {
+static watch_state *watch_lookup(gs_watch_watcher h) {
     uint64_t id = (uint64_t)h.id;
     uint32_t slot = (uint32_t)(id & 0xffffffffu);
     uint32_t gen = (uint32_t)(id >> 32);
@@ -681,8 +681,8 @@ const watch_backend *watch_backend_get(void) { return &watch_in_backend; }
 
 #define WATCH_QUIET_MS 100
 
-gs_watch_handle gs_watch_open(gs_watch_bytes dir) {
-    gs_watch_handle none = { 0 };
+gs_watch_watcher gs_watch_open(gs_watch_bytes dir) {
+    gs_watch_watcher none = { 0 };
     if (dir.len < 0 || (dir.len > 0 && !dir.data)) {
         watch_fail("watcher: the directory is not valid UTF-8");
         return none;
@@ -720,7 +720,7 @@ gs_watch_handle gs_watch_open(gs_watch_bytes dir) {
         free(w);
         return none;
     }
-    gs_watch_handle h = watch_add(w);
+    gs_watch_watcher h = watch_add(w);
     if (!h.id) {
         be->close(w);
         watch_state_free(w);
@@ -731,7 +731,7 @@ gs_watch_handle gs_watch_open(gs_watch_bytes dir) {
     return h;
 }
 
-int64_t gs_watch_next(gs_watch_handle h, gs_watch_bytes out, int64_t timeout_ms) {
+int64_t gs_watch_next(gs_watch_watcher h, gs_watch_bytes out, int64_t timeout_ms) {
     watch_state *w = watch_lookup(h);
     if (!w) return -1;
     if (out.len < 0 || (out.len > 0 && !out.data)) {
@@ -756,7 +756,7 @@ int64_t gs_watch_next(gs_watch_handle h, gs_watch_bytes out, int64_t timeout_ms)
     return watch_frame(w, out);
 }
 
-void gs_watch_close(gs_watch_handle h) {
+void gs_watch_close(gs_watch_watcher h) {
     if (!h.id) return;
     watch_mutex_lock(&watch_slots_mutex);
     uint64_t id = (uint64_t)h.id;

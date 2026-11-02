@@ -1,10 +1,14 @@
 """Checks that the package's module and its C layer's API header describe
-the same boundary: physics.goose against src/physics_api.h. Every
+the same boundary: watcher.goose against src/watcher_api.h. Every
 `extern "gs_..." fn` against the header's list of functions, parameter by
-parameter; every struct that crosses, field by field; and every constant. A
+parameter; and every struct that crosses, field by field. A
 mismatch there compiles on both sides and then passes garbage, which is why
 it is checked rather than trusted. Copied from Goose's test/api_check.py,
 which checked this package while it lived in that repository.
+
+Framing constants in the header (GS_WATCH_VERB_*) are C-internal: the
+public taxonomy is the Kind enum in watcher.goose, so they are not
+checked as Goose lets, and an empty Goose constant set is not an error.
 
 It also checks what the header passes by value is what TinyCC passes the way
 the C compilers do: TinyCC classifies a struct of up to 16 bytes as a whole,
@@ -234,17 +238,15 @@ def check(module):
             problems.append(f"struct {name} has no Goose counterpart in {gname_file}")
         elif gfields != cfields:
             problems.append(f"struct {name}: C fields {cfields}, Goose fields {gfields}")
-    for name in sorted(set(cconsts) | set(gconsts)):
-        if cconsts.get(name) != gconsts.get(name):
-            problems.append(f"constant {name}: {hname} {cconsts.get(name)}, "
-                            f"{gname_file} {gconsts.get(name)}")
+    # Framing constants are C-internal (see module docstring); only
+    # functions and crossing structs are checked here.
     for name, (ret, params) in sorted(cfns.items()):
         for what, ctype in [("returns", ret)] + [("takes", p) for p in params]:
             why = abi_problem(ctype, cstructs) if ctype in cstructs else None
             if why:
                 problems.append(f"{name} {what} {ctype} by value, which TinyCC passes "
                                 f"differently: {why}")
-    if not cfns or not cconsts or not cstructs:
+    if not cfns or not cstructs:
         problems.append(f"nothing parsed out of {hname}")
     return problems
 

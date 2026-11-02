@@ -19,8 +19,8 @@ fn main() {
         exit(1);
     }
     print("watching '", dir, "', Ctrl-C to stop");
-    w.each_change() { name, verb =>
-        print(name, " - ", verb);
+    w.each_event() { ev =>
+        print(ev.path, " - ", watcher::kind_name(ev.kind));
         true
     };
     w.close();
