@@ -1,0 +1,9 @@
+// The watcher package's native part: the C layer over the OS's own
+// directory notifications, a CMake project (CMakeLists.txt beside this
+// file). Unlike gfx/physics, this package is thread-safe by design (no
+// globals): no main_thread_only.
+
+// Examples are their own root files: they are not part of the package's
+// own Goose, and the compiler must not try to compile them into it.
+cmake_target = "goose_watcher";
+exclude = ["examples"];
