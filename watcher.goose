@@ -20,8 +20,8 @@
 // subpath ("sub/file") once recursion lands, so recursion will change
 // values, not this API. Event.path borrows the drain buffer for the
 // duration of the callback: use it inside the callback, or copy it if
-// it must outlive the callback (the threaded consumer example copies
-// it into a fixed array to cross a thread queue).
+// it must outlive the callback (copy it, e.g. into a fixed array
+// to cross a thread queue).
 //
 // The functions are C, the layer in src/ over the OS's own directory
 // notifications (inotify on Linux, kqueue on macOS,

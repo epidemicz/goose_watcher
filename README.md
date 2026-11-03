@@ -68,7 +68,7 @@ public API, the `extern fn`s and thin wrappers |
 | `watcher.build` | the package's sidecar: the CMake target to build, and that `examples/` is not the package's own Goose |
 | `CMakeLists.txt` | builds `goose_watcher`, the layer, as a static library |
 | `src/` | the layer: `watcher_api.h` lists every function the module declares; `test/api_check.py` checks the two agree |
-| `examples/` | own-root programs: a threadless printer and a threaded consumer |
+| `examples/` | own-root programs: a threadless printer (threaded example paused) |
 
 ## License
 

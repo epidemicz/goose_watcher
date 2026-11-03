@@ -57,8 +57,7 @@ The layer is thread-safe by construction: per-watch state, a
 mutex-guarded slot table with watcher generations (a closed id is an
 error, not a crash), and per-thread error text. One watch must only be
 used by one thread at a time; different watches may live on different
-threads. There is no `main_thread_only`: a `thread_fn` may watch, and
-the threaded consumer example does.
+threads. There is no `main_thread_only`: a `thread_fn` may watch.
 
 ## Backends
 
