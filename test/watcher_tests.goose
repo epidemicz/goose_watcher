@@ -9,6 +9,13 @@
 // the end, even on failure. Exit 0 when every check passes, 1 when
 // any fails. The overflow check is the slow part (6,000 files in one
 // burst, then deleting them again); everything else is one burst each.
+// Pass any extra argument to skip the overflow check: run_tests.py
+// does this on Windows, where a burst created while the app is not
+// polling can lose events silently once notifications exceed the
+// kernel's 64 KiB queue (1,500 creates lost all but the first event
+// in testing, with no error), so the drain-framing Overflow that
+// Linux/macOS queueing reliably produces is not a valid expectation
+// there. The skip branch still checks the watch stays alive.
 //
 // A scratch directory left by an interrupted run fails fast at the
 // start rather than testing against files it did not create.
@@ -35,6 +42,10 @@ fn op_name(ev: watcher::Event&) -> const u8[:] {
 
 fn main() {
     var fails = 0;
+    // argv[0] is the program itself, so any further argument means
+    // the runner asked to skip the overflow check (see the header).
+    let argv = args();
+    let skip_overflow = argv.len > 1;
     let dir = "watcher_test_scratch";
     let dir2 = "watcher_test_scratch2";
     if is_dir(dir) || is_dir(dir2) {
@@ -237,35 +248,50 @@ fn main() {
 
     // Overflow: 6,000 files in one burst exceed the 64 KiB drain. The
     // watch stays alive afterwards: a later file still reports.
-    for i in 0..6000 {
-        var name: u8[>..] = [];
-        format(name, "watcher_test_scratch/ov_", i, ".txt");
-        write_file(name[..], "o");
-    }
-    match p.poll(5000) {
-        Received e => { print("FAIL: overflow burst delivered an event ", e.ev); fails += 1; },
-        Timeout => { print("FAIL: overflow burst timed out"); fails += 1; },
-        Error e => {
-            match e.kind {
-                Overflow => { print("ok: overflow burst reports Overflow"); },
-                _ => { print("FAIL: overflow burst reports wrong kind"); fails += 1; },
-            }
-            if !expect(e.msg.len > 0, "overflow error carries a message") { fails += 1; }
-        },
-    }
-    match p.poll(500) {
-        Timeout => { print("ok: after overflow, no pending events"); },
-        Received e => { print("FAIL: after overflow, unexpected ", e.ev); fails += 1; },
-        Error e => { print("FAIL: after overflow, error ", e.msg); fails += 1; },
-    }
-    write_file("watcher_test_scratch/after.txt", "a");
-    match p.poll(2000) {
-        Received e => {
-            if !expect(e.ev.path == "watcher_test_scratch/after.txt", "watch alive after overflow reports the file") { fails += 1; }
-            if !expect(op_name(e.ev) == "create", "watch alive after overflow reports Create") { fails += 1; }
-        },
-        Timeout => { print("FAIL: watch alive after overflow timed out"); fails += 1; },
-        Error e => { print("FAIL: watch alive after overflow error ", e.msg); fails += 1; },
+    // Skipped on Windows (see the header): the watch-alive check
+    // below runs either way, without the 6,000-file burst.
+    if skip_overflow {
+        print("skip: overflow burst (not a valid expectation on this platform)");
+        write_file("watcher_test_scratch/after.txt", "a");
+        match p.poll(2000) {
+            Received e => {
+                if !expect(e.ev.path == "watcher_test_scratch/after.txt", "watch alive after skipped overflow reports the file") { fails += 1; }
+                if !expect(op_name(e.ev) == "create", "watch alive after skipped overflow reports Create") { fails += 1; }
+            },
+            Timeout => { print("FAIL: watch alive after skipped overflow timed out"); fails += 1; },
+            Error e => { print("FAIL: watch alive after skipped overflow error ", e.msg); fails += 1; },
+        }
+    } else {
+        for i in 0..6000 {
+            var name: u8[>..] = [];
+            format(name, "watcher_test_scratch/ov_", i, ".txt");
+            write_file(name[..], "o");
+        }
+        match p.poll(5000) {
+            Received e => { print("FAIL: overflow burst delivered an event ", e.ev); fails += 1; },
+            Timeout => { print("FAIL: overflow burst timed out"); fails += 1; },
+            Error e => {
+                match e.kind {
+                    Overflow => { print("ok: overflow burst reports Overflow"); },
+                    _ => { print("FAIL: overflow burst reports wrong kind"); fails += 1; },
+                }
+                if !expect(e.msg.len > 0, "overflow error carries a message") { fails += 1; }
+            },
+        }
+        match p.poll(500) {
+            Timeout => { print("ok: after overflow, no pending events"); },
+            Received e => { print("FAIL: after overflow, unexpected ", e.ev); fails += 1; },
+            Error e => { print("FAIL: after overflow, error ", e.msg); fails += 1; },
+        }
+        write_file("watcher_test_scratch/after.txt", "a");
+        match p.poll(2000) {
+            Received e => {
+                if !expect(e.ev.path == "watcher_test_scratch/after.txt", "watch alive after overflow reports the file") { fails += 1; }
+                if !expect(op_name(e.ev) == "create", "watch alive after overflow reports Create") { fails += 1; }
+            },
+            Timeout => { print("FAIL: watch alive after overflow timed out"); fails += 1; },
+            Error e => { print("FAIL: watch alive after overflow error ", e.msg); fails += 1; },
+        }
     }
 
     // Cleanup, even on failure, so a rerun starts clean.

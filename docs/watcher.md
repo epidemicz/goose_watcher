@@ -206,10 +206,24 @@ mask plus the two self events; cookie-LRU rename pairing), kqueue with
 pairing), `ReadDirectoryChangesW` on an event on Windows (action→op
 mapping per fsnotify, single-packet OLD→NEW pairing, never `Chmod`).
 Each is dependency-free; the snapshot diff resolves the op on every
-platform. The Linux backend is tested. The Windows backend was
-reported working on one laptop for the previous API (informal, not a
-formal test run); it has not been re-verified for the current API.
-The macOS backend is untested and experimental.
+platform. The Linux backend is tested. The Windows backend is tested
+for the current API except for the two sections below; the macOS
+backend is untested and experimental.
+
+Windows limitations, both verified, not just absent from the tests:
+attribute changes are not watched at all — the notify filter
+excludes `FILE_NOTIFY_CHANGE_ATTRIBUTES`, so a chmod reports no
+event, not a `Write` — and a burst created while the app is not
+polling can lose events silently once notifications exceed the
+kernel's 64 KiB queue. In testing, 1,000 files created at once
+delivered all 1,000 events, while 1,500 created at once delivered
+only the first event, with no error, and the watch stayed alive
+afterwards. The drain-framing `Overflow` therefore only reports
+bursts that are actually delivered to Goose (as Linux inotify
+queueing reliably does, or as continuous polling does on Windows);
+it is not a guarantee against loss in a create-then-poll burst on
+Windows. `run_tests.py` skips the overflow section and the chmod
+check on Windows for exactly these reasons.
 
 ## How it is built
 
