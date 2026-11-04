@@ -40,12 +40,8 @@ package in the program's root file instead:
 
 ```goose
 import watcher from "../goose_watcher";          // a directory, used in place
-import watcher from "epidemicz/goose_watcher@v1";   // v1, released, previous API
+import watcher from "epidemicz/goose_watcher@v1";   // v1
 ```
-
-Note: the examples below are for the checkout (the current API). The
-v1 tag is a previous API — `Handle`, `each_change` with a name and a
-verb string, one directory — so it does not take the code below.
 
 `goose build program.goose` links the layer into the executable, and `goose
 run program.goose` runs it in-process.
@@ -149,13 +145,6 @@ check — see `docs/watcher.md` for why those two are not valid
 expectations there; everything else runs and passes.
 Each step also runs alone: `python3 test/api_check.py`,
 `goose check watcher.goose`, `goose run test/watcher_tests.goose`.
-
-`test/api_check.py` is necessary, not just a lint: neither `goose
-check` nor the C build cross-checks the boundary, so a signature
-mismatch between `watcher.goose` and `src/watcher_api.h` would compile
-on both sides and pass garbage at runtime. The script is the only
-check that catches that, plus the TinyCC-vs-System-V struct-passing
-difference for anything passed by value.
 
 ## License
 
