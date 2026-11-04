@@ -4,11 +4,11 @@
 # `extern fn = "sym"` form, `binary::read_i32le`), and no release carries
 # them yet. No builtin packages (GOOSE_BUILTIN_LIBS unset): the watcher
 # needs neither gfx nor physics, so SDL never enters the build.
-# Linux only for now: the C backends for macOS (kqueue) and Windows
-# (ReadDirectoryChangesW) are present but untested against the current
-# API — macOS untested, Windows not re-verified — so CI must not claim
-# them. Extending this is a matrix entry plus a platform document
-# update, once each backend has run.
+# Linux and Windows. macOS is deliberately not in the matrix: its
+# backend is untested, and the behaviour tests encode Linux/Windows
+# rename pairing that macOS (kqueue, halves unpaired) does not have,
+# so a macOS job would go red on tests, not on a backend bug. Add it
+# only after a probe run and either gated checks or inode pairing.
 name: CI
 
 on:
@@ -28,9 +28,15 @@ env:
 
 jobs:
   test:
-    name: Linux
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      # One platform failing is a result about that platform, not a
+      # reason to stop finding out about the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -50,9 +56,12 @@ jobs:
           python-version: '3.x'
 
       # In-process runs (goose run) need the C library's headers; the
-      # package's layer builds through cmake with gcc. Runners bring gcc
+      # package's layer builds through cmake. Linux runners bring gcc
       # and cmake, but libc6-dev is what TinyCC compiles against.
+      # Windows runners already bring MSVC and CMake, so nothing to
+      # install there.
       - name: Install C dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libc6-dev
 
       - name: Cache the compiler build
@@ -72,8 +81,15 @@ jobs:
         if: steps.cache-goose.outputs.cache-hit != 'true'
         run: cmake --build goose/build --config Release
 
+      # bash on both runners, so the export below works on Windows
+      # too (Git Bash); the default PowerShell shell would not run it.
+      # The Visual Studio generator puts the compiler in a Release
+      # subdirectory; the Make generator puts it directly in build/.
+      # `python` (from setup-python) is the portable invocation:
+      # `python3` is not guaranteed on Windows runners.
       - name: Test
         working-directory: watcher
+        shell: bash
         run: |
-          export PATH="$GITHUB_WORKSPACE/goose/build:$PATH"
-          python3 test/run_tests.py
+          export PATH="$GITHUB_WORKSPACE/goose/build${{ runner.os == 'Windows' && '/Release' || '' }}:$PATH"
+          python test/run_tests.py

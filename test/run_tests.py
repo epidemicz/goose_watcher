@@ -138,7 +138,10 @@ def main():
     clean()
     results = []
     try:
-        results.append(("api_check", run(["python3", "test/api_check.py"])))
+        # sys.executable, not "python3": the interpreter running this
+        # script is guaranteed to exist on every runner, while
+        # "python3" is not guaranteed on Windows runners.
+        results.append(("api_check", run([sys.executable, "test/api_check.py"])))
         for target in ("watcher.goose", "examples/watch_directory_blocking.goose",
                        "examples/watch_directory_polling.goose",
                        "test/watcher_tests.goose"):
