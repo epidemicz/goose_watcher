@@ -1,0 +1,79 @@
+# Tests the watcher package: header/module parity, typechecks, behaviour
+# tests, and the chmod probe. The Goose compiler is built from source at
+# a pinned commit: the current API needs post-v2026.3 features (modern
+# `extern fn = "sym"` form, `binary::read_i32le`), and no release carries
+# them yet. No builtin packages (GOOSE_BUILTIN_LIBS unset): the watcher
+# needs neither gfx nor physics, so SDL never enters the build.
+# Linux only for now: the C backends for macOS (kqueue) and Windows
+# (ReadDirectoryChangesW) are present but untested against the current
+# API — macOS untested, Windows not re-verified — so CI must not claim
+# them. Extending this is a matrix entry plus a platform document
+# update, once each backend has run.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the running job's answer stale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Post-v2026.3, with binary::read_i32le (Oct 31) and the modern extern
+  # form. Bump deliberately: the API's minimum-compiler floor moves with it.
+  GOOSE_PIN: eadca409f68210893f366e60d0c2f0dc29a339be
+
+jobs:
+  test:
+    name: Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: watcher
+
+      # A source checkout beside the package's, at the pinned commit.
+      - name: Check out the Goose compiler
+        uses: actions/checkout@v4
+        with:
+          repository: aardappel/goose
+          ref: ${{ env.GOOSE_PIN }}
+          path: goose
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # In-process runs (goose run) need the C library's headers; the
+      # package's layer builds through cmake with gcc. Runners bring gcc
+      # and cmake, but libc6-dev is what TinyCC compiles against.
+      - name: Install C dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libc6-dev
+
+      - name: Cache the compiler build
+        id: cache-goose
+        uses: actions/cache@v4
+        with:
+          path: goose/build
+          # The compiler source plus what configures it: a new pin, a new
+          # CMakeLists, or a new runner image rebuilds.
+          key: goose-${{ env.GOOSE_PIN }}-${{ runner.os }}-${{ hashFiles('goose/CMakeLists.txt', 'goose/cmake/**') }}
+
+      - name: Configure the compiler
+        if: steps.cache-goose.outputs.cache-hit != 'true'
+        run: cmake -S goose -B goose/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build the compiler
+        if: steps.cache-goose.outputs.cache-hit != 'true'
+        run: cmake --build goose/build --config Release
+
+      - name: Test
+        working-directory: watcher
+        run: |
+          export PATH="$GITHUB_WORKSPACE/goose/build:$PATH"
+          python3 test/run_tests.py

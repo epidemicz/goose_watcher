@@ -1,1 +1,2 @@
-print_changes
+watch_directory_blocking
+watch_directory_polling

@@ -1,23 +1,16 @@
 """Checks that the package's module and its C layer's API header describe
 the same boundary: watcher.goose against src/watcher_api.h. Every
 `extern "gs_..." fn` against the header's list of functions, parameter by
-parameter; and every struct that crosses, field by field. A
+parameter; every struct that crosses, field by field; and every framing
+constant (Goose OP_* against GS_WATCH_OP_*), type and value. A
 mismatch there compiles on both sides and then passes garbage, which is why
 it is checked rather than trusted. Copied from Goose's test/api_check.py,
 which checked this package while it lived in that repository.
-
-Framing constants in the header (GS_WATCH_VERB_*) are C-internal: the
-public taxonomy is the Kind enum in watcher.goose, so they are not
-checked as Goose lets, and an empty Goose constant set is not an error.
 
 It also checks what the header passes by value is what TinyCC passes the way
 the C compilers do: TinyCC classifies a struct of up to 16 bytes as a whole,
 where the System V x86-64 ABI classifies each eightbyte, so such a struct
 mixing floats and integers would arrive in different registers.
-
-The naming convention the check relies on: the Goose struct `BodyDef` is
-`gs_phys_body_def` in C, a slice `const Body[:]` is `gs_phys_body_slice`,
-`u8[:]` is `gs_phys_bytes`, `T&` is a pointer.
 
 Runnable alone, from this repository's root: python test/api_check.py
 """
@@ -238,8 +231,37 @@ def check(module):
             problems.append(f"struct {name} has no Goose counterpart in {gname_file}")
         elif gfields != cfields:
             problems.append(f"struct {name}: C fields {cfields}, Goose fields {gfields}")
-    # Framing constants are C-internal (see module docstring); only
-    # functions and crossing structs are checked here.
+    # Framing constants: Goose OP_* against C GS_WATCH_OP_*, type and
+    # value, with the same type check as functions (i32 vs int32_t). A
+    # renumber on either side must fail this script. PollResult,
+    # Poller, Event, and Op are Goose-only and intentionally unchecked
+    # here: Poller is a root struct (this script only parses plain
+    # `struct` declarations, and a root struct cannot cross to C
+    # anyway), Event never crosses the boundary, and the enums live
+    # only on the Goose side. The i64 lets DRAIN and ERRBUF are
+    # likewise Goose-side buffer sizes, not C constants, and are not
+    # pinned here on purpose.
+    for name, (ctype, value) in sorted(cconsts.items()):
+        short = name[len("GS_WATCH_"):] if name.startswith("GS_WATCH_") else name
+        if short not in gconsts:
+            problems.append(f"const {name} is in {hname} and not declared in {gname_file}")
+        elif gconsts[short] != (ctype, value):
+            problems.append(f"const {short}: C has {ctype} = {value}, "
+                            f"Goose crosses as {gconsts[short][0]} = {gconsts[short][1]}")
+    cshort = {n[len("GS_WATCH_"):] if n.startswith("GS_WATCH_") else n for n in cconsts}
+    for name in sorted(set(gconsts) - cshort):
+        problems.append(f"const {name} is declared in {gname_file} and not in {hname}")
+    # Semantic contracts this signature-level script cannot execute, kept
+    # here so the next reader finds the contract in one place; runtime
+    # proof is in test/watcher_tests.goose (run by test/run_tests.py),
+    # not in this script: framed-buffer layout u32 len LE, u32 op LE,
+    # u32 renamed_len LE, path bytes, renamed bytes (Goose
+    # binary::read_u32le/read_i32le vs C watch_u32le_put; one
+    # single-bit op per event, never a mask), drain overflow (-2, the
+    # Goose side treats it as a catchable error the watch continues
+    # from), and kernel queue overflow (sticky in C: it surfaces on
+    # the call after the burst that overflowed, and the Goose side
+    # classifies it as QueueOverflow, also continue-able).
     for name, (ret, params) in sorted(cfns.items()):
         for what, ctype in [("returns", ret)] + [("takes", p) for p in params]:
             why = abi_problem(ctype, cstructs) if ctype in cstructs else None

@@ -1,74 +1,155 @@
 # goose_watcher
 
 Directory watching for the [Goose](https://github.com/aardappel/goose)
-programming language, on the OS's own notifications: each change in one
-directory as an `Event { path, kind }`, where kind is `Created`,
-`Modified` or `Deleted` and describes the net change. `path` is relative
-to the watched root. A Goose *package*:
-the module `watcher.goose`, its C layer under `src/`, and the
+programming language, on the OS's own notifications: each change in a
+set of directories as an `Event { path, op, renamed_from }`, where op is
+`Create`, `Write`, `Remove`, `Rename`, or `Chmod` and describes the net
+change. `path` joins the watched dir and the entry name. Subdirectories
+are not watched recursively, and symlinks are not followed. A Goose
+*package*: the module `watcher.goose`, its C layer under `src/`, and the
 CMakeLists that builds the layer with no dependencies.
 
-[docs/watcher.md](docs/watcher.md) describes how the layer is built.
+Read it in two ways: `each_event` blocks and calls your block for each
+change, or `poll` on a `Poller` returns one event per call for a
+polling loop. [docs/watcher.md](docs/watcher.md) describes the semantics.
 
 ## Using it
 
-Watcher is NOT a blessed package yet: Goose's `src/blessed.txt` today
-lists only physics, gfx, audio, and ui, and has no watcher row, so a bare
-`import watcher;` does not resolve on its own. The package is in
-blessed-ready form, so that bare import will work once a watcher row
-lands upstream. Until then, use a checkout of this branch, as below. Note the v1 tag
-is the previous API (each_change with name/verb), not the Event/Kind
-API described here; no released tag carries the new API yet.
+Import a checkout, used in place. The import path is relative to
+your program's file: the path below means a checkout sitting
+next to your program, not inside this repository.
 
 ```goose
-import watcher from "../goose_watcher";   // a checkout, used in place
+import watcher from "../goose_watcher";   // a checkout
 ```
 
 and the compiler builds the layer with cmake and the C compiler it
-finds on the machine, and keeps it for every program after that. Once
-blessed, a compiler built with `-DGOOSE_BUILTIN_LIBS=all` would have the
-package compiled in and run a bare-import program with nothing else
-installed; a released tag would then also be fetchable into `~/.goose`.
+finds on the machine, and keeps it for every program after that.
+
+The current API needs a Goose compiler newer than the v2026.3 release:
+a build from main after Oct 31 2026. The v2026.3 release cannot parse
+the module: it predates the modern `extern fn name(...) = "sym"` form
+and `binary::read_i32le`, which the decode core uses. If `goose check`
+or `goose run` fails on `watcher.goose` with a v2026.3 compiler, that
+is why — build Goose main from source
+(`cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`)
+and use `build/goose`.
 
 To use a particular version, a fork, or a checkout of your own, declare the
 package in the program's root file instead:
 
 ```goose
-import watcher from "epidemicz/goose_watcher@v1";   // v1, released, previous API
 import watcher from "../goose_watcher";          // a directory, used in place
+import watcher from "epidemicz/goose_watcher@v1";   // v1, released, previous API
 ```
 
+Note: the examples below are for the checkout (the current API). The
+v1 tag is a previous API — `Handle`, `each_change` with a name and a
+verb string, one directory — so it does not take the code below.
+
 `goose build program.goose` links the layer into the executable, and `goose
-run program.goose` runs it in-process. The examples show it in use:
+run program.goose` runs it in-process.
+
+Blocking, one line per change (see
+`examples/watch_directory_blocking.goose`):
 
 ```goose
-import watcher from "../goose_watcher";   // a checkout; bare import only once blessed
+import watcher from "../goose_watcher";   // a checkout
 
 fn main() {
-    var w, err = watcher::open(".");
-    guard err.len == 0 else { print("watch: ", err); return; }
-    w.each_event() { ev => print(ev.path, " - ", watcher::kind_name(ev.kind)); };
+    var w, ok = watcher::create();
+    guard ok else { print("watch: ", w.error()); return; }
+    guard w.add(".") else { print("watch: ", w.error()); return; }
+    w.each_event() { ev => print(ev); true };
 }
 ```
 
-## Platforms
+Polling, one event per call (see
+`examples/watch_directory_polling.goose`):
 
-| | backend | status |
-|---|---|---|
-| Linux | inotify + poll + read | tested |
-| macOS | kqueue, `EVFILT_VNODE` | experimental |
-| Windows | `ReadDirectoryChangesW` on an event | experimental |
+```goose
+import watcher from "../goose_watcher";   // a checkout
 
-## Layout
+fn main() {
+    var w, ok = watcher::create();
+    guard ok else { print("watch: ", w.error()); return; }
+    guard w.add(".") else { print("watch: ", w.error()); return; }
+    var p = watcher::Poller { w: w, .. };
+    loop {
+        match p.poll(100) {
+            Received e => { print(e.ev); },
+            Timeout => {},
+            Error e => {
+                match e.kind {
+                    Overflow, QueueOverflow => { print("watch overflow: ", e.msg, " (continuing)"); },
+                    Fatal => { print("watch ended: ", e.msg); w.close(); return; },
+                }
+            },
+        }
+    }
+}
+```
 
-| | |
-|---|---|
-| `watcher.goose` | the module: the `Watcher` struct that crosses to C, the `Event`/`Kind`
-public API, the `extern fn`s and thin wrappers |
-| `watcher.build` | the package's sidecar: the CMake target to build, and that `examples/` is not the package's own Goose |
-| `CMakeLists.txt` | builds `goose_watcher`, the layer, as a static library |
-| `src/` | the layer: `watcher_api.h` lists every function the module declares; `test/api_check.py` checks the two agree |
-| `examples/` | own-root programs: a threadless printer (threaded example paused) |
+The examples, run from this repository's root:
+
+```sh
+goose run examples/watch_directory_blocking.goose -- [dir]
+goose run examples/watch_directory_polling.goose -- [dir]
+```
+
+The directory examples default to the current directory; pass a scratch
+directory, not the repository root, unless you want to watch the
+repository itself.
+
+## Semantics to know before porting from fsnotify
+
+This is close to fsnotify in function, not identical to it:
+
+- Events are net changes after a 100 ms quiet window, one op per file
+  per burst — not fsnotify's raw events. A burst of writes folds to one
+  op, create subsumes a same-window write/chmod, write dominates chmod,
+  and a create-modify-delete lifecycle inside one window folds to
+  silence. A delete-then-recreate, and an atomic save (write temp,
+  rename over), report `Write` instead — they carry new contents.
+  That is the documented semantics, not a missed event.
+- `add` watches directories only, not files. Rename pairing is
+  Linux-only reliable (inotify cookie); macOS and Windows halves read
+  unpaired. A rename delivers old first: the old path `Rename`, then
+  the new path `Create` with `renamed_from` naming the old path.
+  Watching both a dir and its parent reports a watched dir's
+  self `Remove` twice, where fsnotify dedups.
+- Overflow is skipped silently by `each_event` and surfaced by `poll`
+  as `Error` with kind `Overflow` or `QueueOverflow`; anything else
+  is `Fatal` — close and reopen. A burst that delivered nothing reads
+  as `Timeout`: poll again.
+- The Linux backend is tested; Windows was informally reported
+  working on one laptop for the previous API (not a formal test)
+  and has not been re-verified for the current API; macOS is untested.
+
+## Tests
+
+Run every test with one command, from this repository's root:
+
+```sh
+python3 test/run_tests.py
+```
+
+That runs `test/api_check.py` (module against C header, see below),
+`goose check` on the module, the examples, and the behaviour tests,
+`test/watcher_tests.goose` (asserting behaviour: create/write/rename/
+remove, atomic save, delete-recreate, silence, multi-file bursts,
+timeouts, `each_event`'s return, overflow and watch-after-overflow),
+and a chmod check driven through the polling example (Goose has no
+chmod in its standard library, so that one goes through the shell).
+Each step also runs alone: `python3 test/api_check.py`,
+`goose check watcher.goose`, `goose run test/watcher_tests.goose`.
+
+`test/api_check.py` is necessary, not just a lint: neither `goose
+check` nor the C build cross-checks the boundary, so a signature
+mismatch between `watcher.goose` and `src/watcher_api.h` would compile
+on both sides and pass garbage at runtime. The script is the only
+check that catches that, plus the TinyCC-vs-System-V struct-passing
+difference for anything passed by value.
 
 ## License
 
